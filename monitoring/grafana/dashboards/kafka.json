@@ -1,0 +1,145 @@
+{
+  "uid": "hlhhw2",
+  "title": "HLHHW2 events",
+  "timezone": "browser",
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Brokers up",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"refId": "A", "expr": "kafka_brokers"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 2}, {"color": "green", "value": 3}]},
+          "decimals": 0
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Under-replicated",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 5, "x": 4, "y": 0},
+      "targets": [{"refId": "A", "expr": "sum(kafka_topic_partition_under_replicated_partition{topic=~\"events.*\"})"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]},
+          "decimals": 0
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Consumer lag",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 5, "x": 9, "y": 0},
+      "targets": [{"refId": "A", "expr": "sum(kafka_consumergroup_lag{consumergroup=\"events-processor\",topic=\"events\"})"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 500}]},
+          "decimals": 0
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Group members",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 14, "y": 0},
+      "targets": [{"refId": "A", "expr": "kafka_consumergroup_members{consumergroup=\"events-processor\"}"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 2}, {"color": "green", "value": 3}]},
+          "decimals": 0
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Duplicates dropped",
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{
+        "refId": "A",
+        "datasource": {"type": "postgres", "uid": "postgres"},
+        "rawSql": "SELECT dropped_duplicates FROM dedup_stats WHERE id = 1",
+        "format": "table"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]},
+          "decimals": 0
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Lag by partition",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [{
+        "refId": "A",
+        "expr": "kafka_consumergroup_lag{consumergroup=\"events-processor\",topic=\"events\"}",
+        "legendFormat": "p{{partition}}"
+      }],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 20, "spanNulls": true}, "decimals": 0}}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Partition leader (broker id)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [{
+        "refId": "A",
+        "expr": "kafka_topic_partition_leader{topic=\"events\"}",
+        "legendFormat": "p{{partition}}"
+      }],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 0, "spanNulls": true, "lineWidth": 2}, "decimals": 0, "min": 0, "max": 3}}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Sink writes / 5s by consumer",
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [{
+        "refId": "A",
+        "datasource": {"type": "postgres", "uid": "postgres"},
+        "rawSql": "SELECT $__timeGroup(processed_at, '5s') AS time, processor_id AS metric, count(*)::float AS value FROM processed_events WHERE $__timeFilter(processed_at) GROUP BY 1, 2 ORDER BY 1",
+        "format": "time_series"
+      }],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 80, "stacking": {"mode": "normal"}}, "decimals": 0}}
+    },
+    {
+      "id": 9,
+      "type": "barchart",
+      "title": "user-0-0 partitions, last 2 min",
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [{
+        "refId": "A",
+        "datasource": {"type": "postgres", "uid": "postgres"},
+        "rawSql": "SELECT 'p' || partition::text AS partition, count(*)::float AS events FROM processed_events WHERE user_id = 'user-0-0' AND processed_at > NOW() - INTERVAL '2 minutes' GROUP BY 1 ORDER BY 1",
+        "format": "table"
+      }],
+      "options": {"orientation": "horizontal", "xTickLabelRotation": 0, "showValue": "always"},
+      "fieldConfig": {"defaults": {"decimals": 0}}
+    }
+  ]
+}
