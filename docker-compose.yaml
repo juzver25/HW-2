@@ -1,0 +1,237 @@
+name: hlhhw2
+
+# Three combined KRaft nodes. INTERNAL is the docker network, EXTERNAL is the host.
+# Any KAFKA_* variable replaces the image's default server.properties, so every
+# property required to boot is set here. auto.create.topics.enable stays off:
+# topics are created by the kafka-init service.
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  KAFKA_HEAP_OPTS: "-Xms384m -Xmx384m"
+
+x-kafka-health: &kafka-health
+  test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+  interval: 10s
+  timeout: 10s
+  retries: 12
+  start_period: 25s
+
+x-app-env: &app-env
+  BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  DATABASE_URL: postgresql://events:events@postgres:5432/events
+  GITHUB_LOGIN: juzver25
+  TOPIC: events
+  DLT_TOPIC: events.dlt
+
+services:
+  kafka-1:
+    image: apache/kafka:4.1.1
+    hostname: kafka-1
+    # The data volume is root-owned. The image user appuser cannot format it.
+    user: "0:0"
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ports:
+      - "19092:19092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://localhost:19092
+    volumes:
+      - kafka-1-data:/tmp/kraft-combined-logs
+    healthcheck: *kafka-health
+
+  kafka-2:
+    image: apache/kafka:4.1.1
+    hostname: kafka-2
+    user: "0:0"
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ports:
+      - "19093:19093"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19093,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:19093
+    volumes:
+      - kafka-2-data:/tmp/kraft-combined-logs
+    healthcheck: *kafka-health
+
+  kafka-3:
+    image: apache/kafka:4.1.1
+    hostname: kafka-3
+    user: "0:0"
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ports:
+      - "19094:19094"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19094,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:19094
+    volumes:
+      - kafka-3-data:/tmp/kraft-combined-logs
+    healthcheck: *kafka-health
+
+  kafka-init:
+    image: apache/kafka:4.1.1
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 \
+          --create --if-not-exists \
+          --topic events \
+          --partitions 3 \
+          --replication-factor 3 \
+          --config min.insync.replicas=2
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 \
+          --create --if-not-exists \
+          --topic events.dlt \
+          --partitions 3 \
+          --replication-factor 3 \
+          --config min.insync.replicas=2
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --describe --topic events
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --describe --topic events.dlt
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: events
+      POSTGRES_PASSWORD: events
+      POSTGRES_DB: events
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U events -d events"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  producer-0:
+    <<: &producer
+      build: ./app
+      restart: unless-stopped
+      stop_grace_period: 40s
+      command: ["python", "-u", "producer.py"]
+      volumes:
+        - producer-state:/state
+      depends_on:
+        kafka-init:
+          condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      PRODUCER_ID: "0"
+      USERS_PER_PRODUCER: "4"
+      EVENTS_PER_SECOND: "8"
+      POISON_RATE: "0.02"
+      KEY_MODE: ${KEY_MODE:-user_id}
+      STATE_PATH: /state/producer-0.json
+
+  producer-1:
+    <<: *producer
+    environment:
+      <<: *app-env
+      PRODUCER_ID: "1"
+      USERS_PER_PRODUCER: "4"
+      EVENTS_PER_SECOND: "8"
+      POISON_RATE: "0.02"
+      KEY_MODE: ${KEY_MODE:-user_id}
+      STATE_PATH: /state/producer-1.json
+
+  producer-2:
+    <<: *producer
+    environment:
+      <<: *app-env
+      PRODUCER_ID: "2"
+      USERS_PER_PRODUCER: "4"
+      EVENTS_PER_SECOND: "8"
+      POISON_RATE: "0.02"
+      KEY_MODE: ${KEY_MODE:-user_id}
+      STATE_PATH: /state/producer-2.json
+
+  consumer-0:
+    <<: &consumer
+      build: ./app
+      restart: unless-stopped
+      stop_grace_period: 30s
+      command: ["python", "-u", "consumer.py"]
+      depends_on:
+        kafka-init:
+          condition: service_completed_successfully
+        postgres:
+          condition: service_healthy
+    environment:
+      <<: *app-env
+      CONSUMER_ID: "0"
+      GROUP_ID: events-processor
+      PROCESSING_DELAY_MS: "50"
+      MAX_ATTEMPTS: "3"
+      COMMIT_INTERVAL_MS: "8000"
+
+  consumer-1:
+    <<: *consumer
+    environment:
+      <<: *app-env
+      CONSUMER_ID: "1"
+      GROUP_ID: events-processor
+      PROCESSING_DELAY_MS: "50"
+      MAX_ATTEMPTS: "3"
+      COMMIT_INTERVAL_MS: "8000"
+
+  consumer-2:
+    <<: *consumer
+    environment:
+      <<: *app-env
+      CONSUMER_ID: "2"
+      GROUP_ID: events-processor
+      PROCESSING_DELAY_MS: "50"
+      MAX_ATTEMPTS: "3"
+      COMMIT_INTERVAL_MS: "8000"
+
+  verify:
+    profiles: ["verify"]
+    build: ./app
+    command: ["python", "-u", "verify.py"]
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-1:
+        condition: service_healthy
+
+volumes:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
+  postgres-data:
+  producer-state:
